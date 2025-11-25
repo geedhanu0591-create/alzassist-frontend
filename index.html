@@ -1,0 +1,1365 @@
+<!doctype html>
+<html lang="en">
+<he<link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0d6efd">
+    >
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AlzAssist — Caretaker & Patient Dashboard</title>
+
+  <!-- Leaflet Map -->
+  <link rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Socket.io -->
+  <script src="https://cdn.socket.io/4.8.0/socket.io.min.js"></script>
+
+  <!-- Google Font -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap"
+        rel="stylesheet">
+
+  <style>
+    :root {
+      --bg:#f5f8fb;
+      --card:#ffffff;
+      --muted:#6b7280;
+      --accent:#0b78d1;
+      --accent2:#0ea5a4;
+      --danger:#ef4444;
+      --radius:12px;
+      --pad:16px;
+      --shadow:0 8px 32px rgba(10,30,70,0.07);
+    }
+    * { box-sizing:border-box; }
+
+    body {
+      margin:0;
+      background:var(--bg);
+      font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto;
+    }
+
+    .wrap { max-width:1180px; margin:20px auto; padding:16px; }
+    .topbar { display:flex; justify-content:space-between; margin-bottom:18px; }
+    .logo {
+      width:48px; height:48px;
+      border-radius:12px;
+      background:linear-gradient(135deg,var(--accent),var(--accent2));
+      display:flex; justify-content:center; align-items:center;
+      color:#fff; font-size:22px; font-weight:700;
+    }
+    .brand-title { font-weight:700; font-size:20px; }
+    .brand-sub { font-size:13px; color:var(--muted); margin-top:2px; }
+
+    .card { background:#fff; border-radius:12px; box-shadow:var(--shadow); }
+    .pad { padding:16px; }
+
+    .btn {
+      padding:10px 14px; border-radius:10px; border:0; cursor:pointer;
+      font-weight:600; display:inline-flex; align-items:center; gap:6px;
+    }
+    .btn-primary { background:var(--accent); color:white; }
+    .btn-ghost { background:#f1f5fb; color:var(--accent); border:1px solid #d8e2f2; }
+
+    .form-control {
+      width:100%; padding:10px;
+      border-radius:10px; border:1px solid #d8e2f2;
+      margin-top:8px;
+    }
+
+    .tiles {
+      margin-top:16px;
+      display:grid;
+      grid-template-columns:repeat(3,1fr);
+      gap:16px;
+    }
+    .tile { background:#fff; padding:14px; border-radius:12px; border:1px solid #eef3fa; }
+
+    .list { margin-top:12px; display:grid; gap:12px; }
+    .list-item {
+      background:#ffffff; padding:12px;
+      border-radius:10px; border:1px solid #e9eef6;
+      display:flex; justify-content:space-between; align-items:center;
+    }
+
+    .call-btn {
+      padding:8px 14px;
+      background:var(--accent2);
+      color:white; border-radius:8px;
+      text-decoration:none;
+    }
+
+    #map { height:360px; border-radius:12px; margin-top:12px; }
+
+    .notice {
+      margin:10px 0; padding:10px;
+      border-radius:8px; font-size:14px;
+    }
+    .notice.warn { background:#fff4e6; color:#9a5700; }
+    .notice.ok { background:#e8fff0; color:#087f36; }
+
+    @media (max-width:900px) {
+      .tiles { grid-template-columns:repeat(2,1fr); }
+    }
+    @media (max-width:600px) {
+      .tiles { grid-template-columns:1fr; }
+    }
+  </style>
+</head>
+<body>
+    <div class="wrap">
+        <!-- Top Navigation Bar -->
+        <div class="topbar">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div class="logo">A</div>
+            <div>
+              <div class="brand-title">AlzAssist</div>
+              <div class="brand-sub">Patient & Caretaker Support System</div>
+            </div>
+          </div>
+    
+          <!-- Right side user controls -->
+          <div id="top-actions" style="display:flex;gap:10px;align-items:center"></div>
+        </div>
+    
+        <!-- MAIN APP CARD -->
+        <div class="card pad">
+          <div id="main-root"></div>
+        </div>
+    
+        <footer style="margin-top:18px;text-align:center;color:#6b7280;font-size:13px">
+          Backend: <b>http://localhost:3000</b> • Use Live Server for location & push notifications.
+        </footer>
+      </div>
+    
+    <script>
+    /* ============================================================
+       PART 2: GLOBALS + BASIC HELPERS + NAVIGATION
+       ============================================================ */
+    
+    const BACKEND = "http://localhost:3000";
+    const socket = io(BACKEND);
+    
+    let USER = null;          // {id,name,email,role}
+    let MAP = null;           // Leaflet map instance
+    let marker = null;        // Marker for map
+    let fence = null;         // Geofence circle
+    let fenceRadius = 0;      // radius in meters
+    let watchId = null;       // Geolocation watch
+    const MAIN = document.getElementById("main-root");
+    
+    /* ---- Helper: $(query) ---- */
+    const $ = (q) => document.querySelector(q);
+    
+    /* ---- Notices (toast-like) ---- */
+    function notice(msg, type="ok") {
+      const n = document.createElement("div");
+      n.className = "notice " + type;
+      n.textContent = msg;
+    
+      MAIN.prepend(n);
+      setTimeout(() => n.remove(), 3500);
+    }
+    
+    /* ---- Buttons ---- */
+    function elButton(text, onClick, cls="btn") {
+      const b = document.createElement("button");
+      b.className = cls;
+      b.textContent = text;
+      b.onclick = onClick;
+      return b;
+    }
+    
+    /* ---- Load into main area ---- */
+    function show(html) {
+      MAIN.innerHTML = html;
+    }
+    
+    /* ---- Navigation System ---- */
+    function navigate(view) {
+      setTopActions();
+    
+      switch (view) {
+        case "login":         return renderLogin();
+        case "register":      return renderRegister();
+        case "dashboard":     return renderDashboard();
+        case "map":           return renderMap();
+        case "persons":       return renderPersons();
+        case "upload":        return renderUploadPerson();
+        case "meds":          return renderMeds();
+        case "journal":       return renderJournal();
+        case "appointments":  return renderAppointments();
+        case "notifications": return renderNotifications();
+        default:              return renderHome();
+      }
+    }
+    
+    /* ---- Top Actions (Login / Logout / Buttons) ---- */
+    function setTopActions() {
+      const box = document.getElementById("top-actions");
+      box.innerHTML = "";
+    
+      if (!USER) {
+        box.appendChild(elButton("Login",    () => navigate("login"),    "btn-ghost"));
+        box.appendChild(elButton("Register", () => navigate("register"), "btn-primary"));
+        return;
+      }
+    
+      const label = document.createElement("div");
+      label.textContent = `${USER.name} (${USER.role})`;
+      label.style.fontSize = "13px";
+      label.style.color = "#555";
+    
+      box.appendChild(label);
+      box.appendChild(elButton("Dashboard", () => navigate("dashboard"), "btn-ghost"));
+      box.appendChild(elButton("Logout",    () => logout(),              "btn"));
+    }
+    
+    /* ---- Logout ---- */
+    function logout() {
+      USER = null;
+      navigate("home");
+    }
+    /* ============================================================
+   PART 3: HOME, LOGIN, REGISTER
+   ============================================================ */
+
+/* ---- Home Screen ---- */
+function renderHome() {
+    show(`
+      <div style="text-align:center;padding:24px">
+        <h1>Welcome to AlzAssist</h1>
+        <p class="small" style="margin-top:6px">
+          A real-time safety & support system for Patients & Caretakers
+        </p>
+        <div style="margin-top:18px">
+          <button class="btn btn-primary" onclick="navigate('register')">Create Account</button>
+          <button class="btn btn-ghost" onclick="navigate('login')">Login</button>
+        </div>
+      </div>
+    `);
+  }
+  
+  /* ---- Login Screen ---- */
+  function renderLogin() {
+    show(`
+      <h2>Login</h2>
+      <div class="row" style="margin-top:12px;display:flex;gap:16px;flex-wrap:wrap">
+        <div class="col tile">
+          <h3>Patient Login</h3>
+          <input id="plEmail" type="email" class="form-control" placeholder="patient@example.com"/>
+          <input id="plPass" type="password" class="form-control" placeholder="password"/>
+          <button class="btn btn-primary" style="margin-top:10px" onclick="doLogin('patient')">
+            Login
+          </button>
+          <div class="small" style="margin-top:8px">
+            Demo: patient@example.com / patient123
+          </div>
+        </div>
+  
+        <div class="col tile">
+          <h3>Caretaker Login</h3>
+          <input id="clEmail" type="email" class="form-control" placeholder="caretaker@example.com"/>
+          <input id="clPass" type="password" class="form-control" placeholder="password"/>
+          <button class="btn btn-primary" style="margin-top:10px" onclick="doLogin('caretaker')">
+            Login
+          </button>
+          <div class="small" style="margin-top:8px">
+            Demo: caretaker@example.com / caretaker123
+          </div>
+        </div>
+      </div>
+    `);
+  }
+  
+  /* ---- Perform Login ---- */
+  async function doLogin(role) {
+    const email = role === "patient" ? $("#plEmail").value : $("#clEmail").value;
+    const password = role === "patient" ? $("#plPass").value : $("#clPass").value;
+  
+    if (!email || !password) return notice("Fill all fields", "warn");
+  
+    try {
+      const res = await fetch(BACKEND + "/login", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ email, password })
+      });
+  
+      const data = await res.json();
+      if (!res.ok) return notice(data.message || "Invalid login", "warn");
+  
+      USER = data;
+      socket.emit("join", { userId: USER.email });
+  
+      // Subscribe to push notifications
+      subscribeToPush();
+  
+      notice("Login successful");
+      navigate("dashboard");
+  
+      // Start GPS sharing if patient
+      if (USER.role === "patient") startPatientLocation();
+      
+    } catch (err) {
+      console.error(err);
+      notice("Network error", "warn");
+    }
+  }
+  
+  /* ---- Registration Screen ---- */
+  function renderRegister() {
+    show(`
+      <h2>Create Account</h2>
+      <div style="margin-top:12px">
+        <input id="regName" class="form-control" placeholder="Full name"/>
+        <input id="regEmail" class="form-control" placeholder="Email"/>
+        <input id="regPass" type="password" class="form-control" placeholder="Password"/>
+        <select id="regRole" class="form-control">
+          <option value="patient">Patient</option>
+          <option value="caretaker">Caretaker</option>
+        </select>
+        <button class="btn btn-primary" style="margin-top:12px" onclick="doRegister()">
+          Register
+        </button>
+      </div>
+    `);
+  }
+  
+  /* ---- Perform Registration ---- */
+  async function doRegister() {
+    const name = $("#regName").value;
+    const email = $("#regEmail").value;
+    const password = $("#regPass").value;
+    const role = $("#regRole").value;
+  
+    if (!name || !email || !password) return notice("Fill all fields", "warn");
+  
+    try {
+      const res = await fetch(BACKEND + "/register", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ name, email, password, role })
+      });
+  
+      const data = await res.json();
+      if (!res.ok) return notice(data.message || "Failed to register", "warn");
+  
+      notice("Registered! Please login.");
+      navigate("login");
+    } catch (err) {
+      console.error(err);
+      notice("Network error", "warn");
+    }
+  }
+/* ============================================================
+   PART 4: DASHBOARDS
+   ============================================================ */
+
+   function renderDashboard() {
+    if (!USER) return navigate("login");
+  
+    let html = `<h2>Dashboard</h2>
+                <div class="small" style="margin-top:4px">Hello, ${USER.name}</div>`;
+  
+    /* -----------------------------
+       PATIENT DASHBOARD
+    ------------------------------*/
+    if (USER.role === "patient") {
+      html += `
+        <div class="tiles">
+          <div class="tile">
+            <strong>Live Location</strong>
+            <div class="small">Share real-time GPS</div>
+            <button class="btn btn-ghost" style="margin-top:8px" onclick="navigate('map')">
+              Open Map
+            </button>
+          </div>
+  
+          <div class="tile">
+            <strong>My Journal</strong>
+            <div class="small">Write what you did today</div>
+            <button class="btn btn-primary" style="margin-top:8px" onclick="navigate('journal')">
+              Write Entry
+            </button>
+          </div>
+  
+          <div class="tile">
+            <strong>My Medications</strong>
+            <div class="small">View schedule & mark taken</div>
+            <button class="btn btn-ghost" style="margin-top:8px" onclick="navigate('meds')">
+              View
+            </button>
+          </div>
+        </div>
+  
+        <div class="tiles" style="margin-top:16px">
+          <div class="tile">
+            <strong>Contacts</strong>
+            <div class="small">People you can call instantly</div>
+            <button class="btn btn-ghost" style="margin-top:8px" onclick="navigate('persons')">
+              View Contacts
+            </button>
+            <button class="btn btn-primary" style="margin-top:8px" onclick="navigate('upload')">
+              Add Contact
+            </button>
+          </div>
+  
+          <div class="tile">
+            <strong>Link Caretaker</strong>
+            <div class="small">Connect with your caretaker</div>
+            <button class="btn btn-ghost" style="margin-top:8px" onclick="openLinkModal()">
+              Link
+            </button>
+          </div>
+  
+          <div class="tile" style="text-align:center">
+            <strong>Emergency</strong>
+            <div class="small">Send SOS alert</div>
+            <button class="btn" onclick="sendSOS()" 
+                    style="margin-top:8px;background:var(--danger);color:white;width:100%">
+              SOS
+            </button>
+          </div>
+        </div>
+      `;
+    }
+  
+    /* -----------------------------
+       CARETAKER DASHBOARD
+    ------------------------------*/
+    else {
+      html += `
+        <div class="tiles">
+          <div class="tile">
+            <strong>Track Location</strong>
+            <div class="small">Live map of linked patients</div>
+            <button class="btn btn-ghost" style="margin-top:8px" onclick="navigate('map')">
+              Open Map
+            </button>
+          </div>
+  
+          <div class="tile">
+            <strong>Medication Manager</strong>
+            <div class="small">Add & manage patient meds</div>
+            <button class="btn btn-primary" style="margin-top:8px" onclick="navigate('meds')">
+              Manage
+            </button>
+          </div>
+  
+          <div class="tile">
+            <strong>Patient Journals</strong>
+            <div class="small">Read patient entries</div>
+            <button class="btn btn-ghost" style="margin-top:8px" onclick="navigate('journal')">
+              View
+            </button>
+          </div>
+        </div>
+  
+        <div class="tiles" style="margin-top:16px">
+          <div class="tile">
+            <strong>Appointments</strong>
+            <div class="small">Create & schedule reminders</div>
+            <button class="btn btn-ghost" style="margin-top:8px" onclick="navigate('appointments')">
+              Open
+            </button>
+          </div>
+  
+          <div class="tile">
+            <strong>Notifications</strong>
+            <div class="small">SOS, Journals, Med Reminders</div>
+            <button class="btn btn-primary" style="margin-top:8px" onclick="navigate('notifications')">
+              View Alerts
+            </button>
+          </div>
+  
+          <div class="tile">
+            <strong>Contacts</strong>
+            <div class="small">Patient people list</div>
+            <button class="btn btn-ghost" style="margin-top:8px" onclick="navigate('persons')">
+              View Contacts
+            </button>
+            <button class="btn btn-primary" style="margin-top:8px" onclick="navigate('upload')">
+              Add Contact
+            </button>
+          </div>
+        </div>
+  
+        <div class="tiles" style="margin-top:16px">
+          <div class="tile">
+            <strong>Link Patient</strong>
+            <div class="small">Tag patient by email</div>
+            <button class="btn btn-ghost" style="margin-top:8px" onclick="openLinkModal()">
+              Link
+            </button>
+          </div>
+  
+          <div class="tile" style="text-align:center">
+            <strong>SOS Alerts</strong>
+            <div class="small">Emergency alerts appear here</div>
+            <button class="btn" style="margin-top:8px;background:#f1f5fb;color:#444" 
+                    onclick="navigate('notifications')">
+              View SOS
+            </button>
+          </div>
+        </div>
+      `;
+    }
+  
+    show(html);
+  }
+/* ============================================================
+   PART 5: MEDICATIONS + JOURNAL + APPOINTMENTS
+   ============================================================ */
+
+   function renderMeds() {
+    if (!USER) return navigate("login");
+  
+    show(`<h2>Medications</h2>
+          <div id="med-root" style="margin-top:14px">Loading…</div>`);
+  
+    loadMeds();
+  }
+  
+  /* -------------------------
+     LOAD MEDICATIONS
+  --------------------------*/
+  async function loadMeds() {
+    try {
+      const res = await fetch(`${BACKEND}/meds?user=${USER.email}`);
+      const meds = await res.json();
+  
+      let html = ``;
+  
+      /* Caretaker sees add-med form */
+      if (USER.role === "caretaker") {
+        html += `
+          <div class="card pad">
+            <h3>Add Medication</h3>
+            <input id="mName" class="form-control" placeholder="Medicine name"/>
+            <input id="mDose" class="form-control" placeholder="Dose (ex: 1 tablet)"/>
+            <input id="mTime" class="form-control" type="time" />
+            <button class="btn btn-primary" style="margin-top:8px" onclick="saveMed()">Add</button>
+          </div>
+        `;
+      }
+  
+      /* List meds */
+      html += `<div class="list" style="margin-top:14px">`;
+  
+      if (meds.length === 0) {
+        html += `<p class="small">No medications yet.</p>`;
+      } else {
+        meds.forEach(m => {
+          html += `
+            <div class="list-item">
+              <div>
+                <strong>${m.name}</strong><br>
+                <span class="small">Dose: ${m.dose}</span><br>
+                <span class="small">Time: ${m.time}</span>
+              </div>
+              ${USER.role === "patient" ? `
+                <button class="btn btn-primary" onclick="markTaken('${m.id}')">
+                  Mark Taken
+                </button>
+              ` : ``}
+            </div>
+          `;
+        });
+      }
+  
+      html += `</div>`;
+      $("#med-root").innerHTML = html;
+  
+    } catch (e) {
+      notice("Failed to load meds", "warn");
+    }
+  }
+  
+  /* -------------------------
+     SAVE MEDICATION
+  --------------------------*/
+  async function saveMed() {
+    const name = $("#mName").value;
+    const dose = $("#mDose").value;
+    const time = $("#mTime").value;
+  
+    if (!name || !dose || !time)
+      return notice("Fill all fields", "warn");
+  
+    const res = await fetch(`${BACKEND}/meds`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        caretaker: USER.email,
+        name, dose, time
+      })
+    });
+  
+    if (!res.ok) return notice("Failed to save", "warn");
+  
+    notice("Medication added");
+    renderMeds();
+  }
+  
+  /* -------------------------
+     MARK AS TAKEN
+  --------------------------*/
+  async function markTaken(id) {
+    const res = await fetch(`${BACKEND}/meds/taken/${id}`, {
+      method: "POST"
+    });
+  
+    if (!res.ok) return notice("Failed", "warn");
+  
+    notice("Marked as taken");
+    renderMeds();
+  }
+  
+  /* ============================================================
+     JOURNAL
+     ============================================================ */
+  
+  function renderJournal() {
+    if (!USER) return navigate("login");
+  
+    show(`<h2>Journal</h2>
+          <div id="j-root" style="margin-top:14px">Loading…</div>`);
+  
+    loadJournal();
+  }
+  
+  async function loadJournal() {
+    const res = await fetch(`${BACKEND}/journal?user=${USER.email}`);
+    const list = await res.json();
+  
+    let html = ``;
+  
+    /* Patients Write Entries */
+    if (USER.role === "patient") {
+      html += `
+        <div class="card pad">
+          <h3>New Entry</h3>
+          <textarea id="jText" class="form-control" 
+                    style="height:90px" placeholder="Write about your day..."></textarea>
+          <button class="btn btn-primary" style="margin-top:8px" onclick="saveJournal()">
+            Save Entry
+          </button>
+        </div>
+      `;
+    }
+  
+    /* List entries */
+    html += `<div class="list" style="margin-top:14px">`;
+  
+    if (list.length === 0) {
+      html += `<p class="small">No journal entries yet.</p>`;
+    } else {
+      list.reverse().forEach(j => {
+        html += `
+          <div class="card pad">
+            <div class="small">${new Date(j.date).toLocaleString()}</div>
+            <div style="margin-top:6px">${j.text}</div>
+          </div>
+        `;
+      });
+    }
+  
+    html += `</div>`;
+    $("#j-root").innerHTML = html;
+  }
+  
+  /* Save journal entry */
+  async function saveJournal() {
+    const text = $("#jText").value;
+    if (!text) return notice("Write something", "warn");
+  
+    const res = await fetch(`${BACKEND}/journal`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        user: USER.email,
+        text
+      })
+    });
+  
+    if (!res.ok) return notice("Failed", "warn");
+  
+    notice("Saved");
+    renderJournal();
+  }
+  
+  /* ============================================================
+     APPOINTMENTS
+     ============================================================ */
+  
+  function renderAppointments() {
+    if (!USER) return navigate("login");
+  
+    show(`<h2>Appointments</h2>
+          <div id="a-root" style="margin-top:14px">Loading…</div>`);
+  
+    loadAppointments();
+  }
+  
+  async function loadAppointments() {
+    const res = await fetch(`${BACKEND}/appointments?user=${USER.email}`);
+    const list = await res.json();
+  
+    let html = ``;
+  
+    /* Caretaker creates appointments */
+    if (USER.role === "caretaker") {
+      html += `
+        <div class="card pad">
+          <h3>Add Appointment</h3>
+          <input id="aTitle" class="form-control" placeholder="Title (ex: Neurology checkup)" />
+          <input id="aDate" type="datetime-local" class="form-control" />
+          <button class="btn btn-primary" style="margin-top:8px" onclick="saveAppointment()">
+            Add
+          </button>
+        </div>
+      `;
+    }
+  
+    html += `<div class="list" style="margin-top:14px">`;
+  
+    if (list.length === 0) {
+      html += `<p class="small">No appointments yet.</p>`;
+    } else {
+      list.forEach(a => {
+        html += `
+          <div class="card pad">
+            <strong>${a.title}</strong><br>
+            <div class="small">${new Date(a.date).toLocaleString()}</div>
+          </div>
+        `;
+      });
+    }
+  
+    html += `</div>`;
+    $("#a-root").innerHTML = html;
+  }
+  
+  /* Save appointment */
+  async function saveAppointment() {
+    const title = $("#aTitle").value;
+    const date = $("#aDate").value;
+  
+    if (!title || !date) return notice("Fill all fields", "warn");
+  
+    const res = await fetch(`${BACKEND}/appointments`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        caretaker: USER.email,
+        title, date
+      })
+    });
+  
+    if (!res.ok) return notice("Failed", "warn");
+  
+    notice("Appointment saved");
+    renderAppointments();
+  }
+      /* ============================================================
+   PART 6: NOTIFICATIONS + SOS + CONTACTS + LINKING
+   ============================================================ */
+
+function renderNotifications() {
+    if (!USER) return navigate("login");
+  
+    show(`<h2>Notifications</h2>
+          <div id="n-root" style="margin-top:14px">Loading…</div>`);
+  
+    loadNotifications();
+  }
+  
+  /* Load notifications from backend */
+  async function loadNotifications() {
+    const res = await fetch(`${BACKEND}/notifications?user=${USER.email}`);
+    const list = await res.json();
+  
+    let html = `<div class="list">`;
+  
+    if (list.length === 0) {
+      html += `<p class="small">No notifications yet.</p>`;
+    } else {
+      list.slice().reverse().forEach(n => {
+        html += `
+          <div class="card pad" style="border-left:5px solid ${
+            n.type === "sos" ? "var(--danger)" :
+            n.type === "med" ? "var(--accent2)" : 
+            "var(--accent)"
+          }">
+            <strong>${n.title}</strong>
+            <div class="small">${n.message}</div>
+            <div class="small" style="margin-top:4px;color:#777">
+              ${new Date(n.date).toLocaleString()}
+            </div>
+            <button class="btn btn-ghost" style="margin-top:8px"
+                    onclick="dismissNotification('${n.id}')">Dismiss</button>
+          </div>
+        `;
+      });
+    }
+  
+    html += `</div>`;
+    $("#n-root").innerHTML = html;
+  }
+  
+  /* Dismiss */
+  async function dismissNotification(id) {
+    await fetch(`${BACKEND}/notifications/${id}`, { method: "DELETE" });
+    loadNotifications();
+  }
+  
+  /* ============================================================
+     SOS FEATURE (PATIENT → CARETAKER)
+     ============================================================ */
+  
+  async function sendSOS() {
+    if (!USER) return;
+  
+    const res = await fetch(`${BACKEND}/sos`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        user: USER.email,
+        name: USER.name
+      })
+    });
+  
+    if (!res.ok) return notice("SOS failed", "warn");
+  
+    notice("SOS sent!");
+  }
+  
+  /* Also receive SOS via socket (caretaker) */
+  socket.on("sos", data => {
+    if (USER && USER.role === "caretaker") {
+      notice("🚨 SOS from " + data.name, "warn");
+    }
+  });
+  
+  /* ============================================================
+     CONTACTS + ADD PERSON
+     ============================================================ */
+  
+  function renderPersons() {
+    if (!USER) return navigate("login");
+  
+    let persons = JSON.parse(localStorage.getItem("persons") || "[]");
+  
+    let html = `
+      <h2>Contacts</h2>
+      <button class="btn btn-primary" style="margin-top:8px" onclick="navigate('upload')">
+        Add Person
+      </button>
+  
+      <div class="list" style="margin-top:14px">`;
+  
+    if (persons.length === 0) {
+      html += `<p class="small">No contacts saved.</p>`;
+    } else {
+      persons.forEach(p => {
+        html += `
+          <div class="list-item">
+            <div>
+              <strong>${p.name}</strong><br/>
+              <span class="small">${p.relation}</span><br/>
+              <span class="small">📞 ${p.phone}</span>
+            </div>
+            <a href="tel:${p.phone}" class="btn" 
+               style="background:var(--accent2);color:white">Call</a>
+          </div>`;
+      });
+    }
+  
+    html += `</div>`;
+  
+    show(html);
+  }
+  
+  function renderUploadPerson() {
+    if (!USER) return navigate("login");
+  
+    show(`
+      <h2>Add Contact</h2>
+      <div class="card pad" style="margin-top:14px">
+        <input id="pName" class="form-control" placeholder="Name"/>
+        <input id="pRel" class="form-control" placeholder="Relation" style="margin-top:8px"/>
+        <input id="pPhone" class="form-control" placeholder="Phone number" style="margin-top:8px"/>
+        <input id="pPhoto" type="file" accept="image/*" class="form-control" style="margin-top:8px"/>
+        <button class="btn btn-primary" style="margin-top:12px" onclick="savePerson()">
+          Save
+        </button>
+      </div>
+    `);
+  }
+  
+  function savePerson() {
+    const name = $("#pName").value;
+    const relation = $("#pRel").value;
+    const phone = $("#pPhone").value;
+    const file = $("#pPhoto").files[0];
+  
+    if (!name || !relation || !phone)
+      return notice("Fill all fields", "warn");
+  
+    const person = {
+      id: Date.now(),
+      name,
+      relation,
+      phone,
+      photo: file ? URL.createObjectURL(file) : null
+    };
+  
+    let persons = JSON.parse(localStorage.getItem("persons") || "[]");
+    persons.push(person);
+    localStorage.setItem("persons", JSON.stringify(persons));
+  
+    notice("Saved");
+    navigate("persons");
+  }
+  
+  /* ============================================================
+     LINK PATIENT ↔ CARETAKER
+     ============================================================ */
+  
+  function openLinkModal() {
+    const email = prompt("Enter the user's email to link:");
+  
+    if (!email) return;
+  
+    fetch(`${BACKEND}/link`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        requester: USER.email,
+        target: email
+      })
+    }).then(r => r.json())
+      .then(data => {
+        if (data.ok) notice("Linked successfully");
+        else notice(data.message, "warn");
+      });
+  }
+  /* ============================================================
+   PART 7: MAP, GEOFENCE, GPS SHARING, LIVE MARKERS
+   ============================================================ */
+
+let mapInstance = null;
+let markerMap = {};   // keyed by userId => marker
+let geofences = [];   // local client geofences for patient (persisted locally)
+const GEOFENCES_LS_KEY = 'alz_geofences_v1';
+
+/* Render full map page (shared for both roles) */
+function renderMap() {
+  if (!USER) return navigate('login');
+
+  show(`
+    <h2>Live Map</h2>
+    <div class="small">Real-time map for location sharing & geofences</div>
+
+    <div style="margin-top:12px" class="row">
+      <div class="col card pad">
+        <div id="map" style="height:420px;border-radius:10px"></div>
+
+        <div style="margin-top:10px">
+          <label class="small">Center map on:</label>
+          <button class="btn btn-ghost" onclick="fitAllMarkers()">Fit All</button>
+        </div>
+      </div>
+
+      <div class="col card pad" style="min-width:260px">
+        <h3>Geofences (Patient)</h3>
+        <div class="small">Create safe zones (center optional - will use current location)</div>
+
+        <input id="gfName" class="form-control" placeholder="Zone name (Home)"/>
+        <input id="gfLat" class="form-control" placeholder="Latitude (optional)"/>
+        <input id="gfLng" class="form-control" placeholder="Longitude (optional)"/>
+        <input id="gfRadius" class="form-control" placeholder="Radius meters (300)" value="300"/>
+
+        <div style="margin-top:8px">
+          <button class="btn btn-primary" onclick="addGeofenceFromForm()">Add Zone</button>
+          <button class="btn btn-ghost" onclick="loadGeofences()">Reload Zones</button>
+        </div>
+
+        <div style="margin-top:12px">
+          <h4>Saved Zones</h4>
+          <div id="gfList" class="list"></div>
+        </div>
+
+        <div style="margin-top:12px">
+          <h4>Controls</h4>
+          ${ USER.role === 'patient' ? '<button class="btn btn-primary" onclick="startPatientLocation()">Start Sharing</button> <button class="btn" onclick="stopPatientLocation()">Stop Sharing</button>' : '<div class="small">Open map and watch live updates from patients</div>' }
+        </div>
+      </div>
+    </div>
+  `);
+
+  setTimeout(() => {
+    initLeafletMap();
+    loadGeofences();
+  }, 150);
+}
+
+/* Initialize Leaflet */
+function initLeafletMap() {
+  if (mapInstance) {
+    try { mapInstance.invalidateSize(); } catch (e) {}
+    return;
+  }
+
+  mapInstance = L.map('map').setView([13.0827,80.2707], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19
+  }).addTo(mapInstance);
+}
+
+/* Fit map to all markers */
+function fitAllMarkers() {
+  if (!mapInstance) return;
+  const keys = Object.keys(markerMap);
+  if (!keys.length) return notice('No markers yet');
+  const group = new L.featureGroup(keys.map(k=>markerMap[k]));
+  mapInstance.fitBounds(group.getBounds().pad(0.5));
+}
+
+/* Add or update marker on map (for caretaker view) */
+function addOrUpdateMarker(userId, lat, lng, label) {
+  if (!mapInstance) initLeafletMap();
+  const key = String(userId);
+  if (markerMap[key]) {
+    markerMap[key].setLatLng([lat, lng]);
+    return;
+  }
+  const m = L.marker([lat, lng]).addTo(mapInstance).bindPopup((label||userId));
+  markerMap[key] = m;
+}
+
+/* Remove a marker */
+function removeMarker(userId) {
+  const key = String(userId);
+  if (markerMap[key]) {
+    try { mapInstance.removeLayer(markerMap[key]); } catch(e){}
+    delete markerMap[key];
+  }
+}
+
+/* ============================
+   GEOFENCE FUNCTIONS (patient)
+   ============================ */
+
+function loadGeofences() {
+  try {
+    geofences = JSON.parse(localStorage.getItem(GEOFENCES_LS_KEY) || '[]');
+  } catch(e) {
+    geofences = [];
+  }
+  renderGeofenceList();
+  drawGeofenceCircles();
+}
+
+function saveGeofences() {
+  localStorage.setItem(GEOFENCES_LS_KEY, JSON.stringify(geofences));
+}
+
+/* Render list */
+function renderGeofenceList() {
+  const el = document.getElementById('gfList');
+  if (!el) return;
+  if (!geofences.length) {
+    el.innerHTML = '<div class="small">No zones</div>';
+    return;
+  }
+  el.innerHTML = geofences.map(g=>`
+    <div class="list-item">
+      <div>
+        <div style="font-weight:600">${g.name || 'Zone'}</div>
+        <div class="small">Radius: ${g.radius} m</div>
+        <div class="small">Center: ${g.centerLat ? (g.centerLat.toFixed(5)+', '+g.centerLng.toFixed(5)) : 'Use current location'}</div>
+      </div>
+      <div>
+        <button class="btn btn-ghost" onclick="removeGeofence('${g.id}')">Remove</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+/* Draw circles on map */
+function drawGeofenceCircles() {
+  if (!mapInstance) return;
+  // clear existing circles
+  if (window._geofenceCircles) {
+    window._geofenceCircles.forEach(c=>{ try{ mapInstance.removeLayer(c); }catch(e){} });
+  }
+  window._geofenceCircles = [];
+
+  geofences.forEach(g=>{
+    if (!g.centerLat || !g.centerLng) return;
+    const circle = L.circle([g.centerLat, g.centerLng], { radius: g.radius, color: '#ef4444', fillOpacity: 0.06 }).addTo(mapInstance);
+    window._geofenceCircles.push(circle);
+  });
+}
+
+/* Add from form (if no lat/lng provided, will attempt to use current marker location) */
+function addGeofenceFromForm() {
+  const name = $('#gfName').value || 'Zone';
+  const latVal = $('#gfLat').value.trim();
+  const lngVal = $('#gfLng').value.trim();
+  const radius = parseInt($('#gfRadius').value) || 300;
+
+  let lat = null, lng = null;
+  if (latVal && lngVal) { lat = parseFloat(latVal); lng = parseFloat(lngVal); }
+  else if (marker && marker.getLatLng) {
+    const pos = marker.getLatLng();
+    lat = pos.lat; lng = pos.lng;
+  }
+
+  const g = { id: Date.now().toString(), name, centerLat: lat, centerLng: lng, radius };
+  geofences.push(g);
+  saveGeofences();
+  renderGeofenceList();
+  drawGeofenceCircles();
+  notice('Zone added');
+}
+
+/* Remove */
+function removeGeofence(id) {
+  geofences = geofences.filter(g=>g.id!==id);
+  saveGeofences();
+  renderGeofenceList();
+  drawGeofenceCircles();
+}
+
+/* ============================
+   PATIENT LOCATION SHARING
+   ============================ */
+
+/* Start sharing location (patient) */
+function startPatientLocation() {
+  if (!USER || USER.role !== 'patient') return notice('Login as patient to share', 'warn');
+  if (!navigator.geolocation) return notice('Geolocation not supported', 'warn');
+
+  if (watchId) navigator.geolocation.clearWatch(watchId);
+
+  watchId = navigator.geolocation.watchPosition(pos=>{
+    const lat = pos.coords.latitude, lng = pos.coords.longitude;
+    // Update local marker for patient to see
+    if (!mapInstance) initLeafletMap();
+    if (!marker) marker = L.marker([lat,lng]).addTo(mapInstance).bindPopup('You');
+    else marker.setLatLng([lat,lng]);
+    mapInstance.setView([lat,lng], 14);
+
+    // Check geofence locally
+    checkGeofenceViolations(lat,lng);
+
+    // Emit location to backend via socket (server persists and broadcasts)
+    socket.emit('updateLocation', { userId: USER.email || USER.id, lat, lng, timestamp: new Date().toISOString() });
+
+  }, err=>{
+    console.error('geo error', err);
+    notice('GPS error: ' + (err.message||err.code), 'warn');
+  }, { enableHighAccuracy:true, maximumAge:5000, timeout:10000 });
+
+  notice('Location sharing started');
+}
+
+/* Stop sharing */
+function stopPatientLocation() {
+  if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; notice('Stopped sharing'); }
+}
+
+/* ============================
+   GEOFENCE CHECK
+   ============================ */
+function checkGeofenceViolations(lat,lng) {
+  // find any geofence that has center set; if left any, send violation
+  geofences.forEach(g=>{
+    if (!g.centerLat || !g.centerLng) return;
+    const d = haversineMeters(lat,lng,g.centerLat,g.centerLng);
+    if (d > g.radius) {
+      // violation detected: emit update with violation flag
+      socket.emit('updateLocation', { userId: USER.email || USER.id, lat, lng, timestamp: new Date().toISOString(), geofenceViolation: g.name });
+      notice('You left zone: ' + g.name, 'warn');
+    }
+  });
+}
+
+/* haversine */
+function haversineMeters(lat1,lon1,lat2,lon2){
+  const R = 6371e3;
+  const φ1 = lat1 * Math.PI/180;
+  const φ2 = lat2 * Math.PI/180;
+  const Δφ = (lat2-lat1) * Math.PI/180;
+  const Δλ = (lon2-lon1) * Math.PI/180;
+  const a = Math.sin(Δφ/2)*Math.sin(Δφ/2)+Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)*Math.sin(Δλ/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+/* ============================
+   SOCKET LISTENERS FOR LOCATION UPDATES (caretaker)
+   ============================ */
+
+socket.on('locationUpdate', data=>{
+  // data: { userId, lat, lng, geofenceViolation? }
+  if (!mapInstance) initLeafletMap();
+
+  if (data && data.lat && data.lng) {
+    addOrUpdateMarker(data.userId || data.id || Math.random(), data.lat, data.lng, data.userId);
+    // if geofence violation flag exists and current user is caretaker, show notice
+    if (data.geofenceViolation && USER && USER.role === 'caretaker') {
+      notice(`Boundary alert: ${data.userId} left ${data.geofenceViolation}`, 'warn');
+    }
+  }
+});
+
+/* Also handle direct marker clear or other events if needed */
+socket.on('disconnect', ()=> console.log('socket disconnected'));
+/* ============================================================
+   PART 8: WEB PUSH SUBSCRIPTION, SERVICE WORKER, FINAL INIT
+   ============================================================ */
+
+/* ------------- Service Worker (sw.js) instructions -------------
+   Create file: frontend/sw.js (in the same folder as index.html)
+   Paste the following into sw.js (this is NOT part of index.html):
+------------------------------------------------------------------
+self.addEventListener('push', function(event) {
+  let data = {};
+  if (event.data) {
+    try { data = event.data.json(); } catch(e) { data = { body: event.data.text() }; }
+  }
+  const title = data.title || 'AlzAssist';
+  const options = {
+    body: data.body || '',
+    data: data.data || {},
+    icon: '/favicon.png'
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', function(event) {
+  event.notification.close();
+  event.waitUntil(clients.matchAll({ type: 'window' }).then(windowClients => {
+    // focus first client or open new
+    for (let client of windowClients) {
+      if (client.url === '/' && 'focus' in client) return client.focus();
+    }
+    if (clients.openWindow) return clients.openWindow('/');
+  }));
+});
+------------------------------------------------------------------
+Save sw.js and make sure it's served by Live Server (it should be in the same frontend folder).
+*/
+
+/* ---------- Frontend subscription & helper functions ---------- */
+
+// Replace with your VAPID public key (you generated earlier)
+const VAPID_PUBLIC = 'BDLYsQzfMmKBJqKdUwDskbwMTE0LvoNTZXsBMVYinR4AokWBplf8HIpR7vQQCd7KqKwOX2Heh-r1VqWbyYCgU9k';
+
+/* Convert base64 VAPID to UInt8Array */
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+/* Subscribe the currently logged-in user to push notifications */
+async function subscribeToPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    console.warn('Push or ServiceWorker not supported');
+    return;
+  }
+
+  try {
+    // register SW if not already
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    console.log('Service worker registered', reg);
+
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      console.warn('Notification permission not granted');
+      return;
+    }
+
+    // subscribe
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC)
+    });
+
+    // send subscription to backend
+    await fetch(BACKEND + '/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sub)
+    });
+
+    console.log('Subscribed to push and sent to backend');
+    notice('Push notifications enabled');
+
+  } catch (err) {
+    console.error('Push subscription failed', err);
+  }
+}
+
+/* ---------- Socket listeners for notifications & appointments ---------- */
+socket.on('notification', (n) => {
+  // n: notification object { id, type, message, date }
+  // show a brief toast
+  if (n && n.message) {
+    notice(n.message, n.type === 'sos' ? 'warn' : 'ok');
+  }
+  // optionally update notifications view if open
+  const current = document.getElementById('n-root');
+  if (current) loadNotifications();
+});
+
+socket.on('appointmentReminder', (payload) => {
+  notice('Appointment reminder: ' + (payload?.appointment?.title || 'Upcoming'), 'ok');
+  // reload appointments if open
+  const aroot = document.getElementById('a-root');
+  if (aroot) loadAppointments();
+});
+
+socket.on('medicationUpdate', (payload) => {
+  // payload may contain med, reminder, or medTaken
+  if (USER && USER.role === 'patient') {
+    if (payload.reminder && payload.med) {
+      notice('Reminder: ' + payload.med.name + ' at ' + payload.med.time, 'warn');
+    } else if (payload.medTaken) {
+      notice('Medication status updated', 'ok');
+    }
+  }
+  // refresh meds UI when open
+  const mroot = document.getElementById('med-root');
+  if (mroot) loadMeds();
+});
+
+/* ---------- Helper: ensure service worker file is accessible ----------
+   If you host index.html on Live Server, ensure sw.js is at the root of that served folder (frontend/sw.js).
+   On startup we attempt to register; but you may call subscribeToPush() manually from browser console.
+--------------------------------------------------------------------- */
+
+/* ---------- Final init ---------- */
+window.addEventListener('load', () => {
+  setTopActions();
+  navigate('home');
+});
+
+/* Expose some helpers to console for testing */
+window._alz = {
+  navigate, subscribeToPush, sendSOS, startPatientLocation, stopPatientLocation
+};
+
+</script>
+</body>
+</html>
